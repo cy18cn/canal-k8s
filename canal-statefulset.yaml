@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: canal-hs
+  namespace: infra
+  labels:
+    app: canal
+spec:
+  ports:
+  - port: 11111
+    targetPort: 11111
+    name: client
+  clusterIP: None
+  selector:
+    app: canal
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: canal-metrics
+  namespace: infra
+  labels:
+    app: canal
+spec:
+  ports:
+  - port: 11112
+    targetPort: 11112
+    name: http-metrics
+  selector:
+    app: canal
+
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: canal-pdb
+  namespace: infra
+spec:
+  selector:
+    matchLabels:
+      app: canal
+  maxUnavailable: 1
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: canal
+  namespace: infra
+  labels:
+    app: canal
+spec:
+  selector:
+    matchLabels: 
+      app: canal
+  serviceName: "canal-hs"
+  replicas: 2
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: canal
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: "app"
+                operator: In
+                values:
+                - canal
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: canal
+        imagePullPolicy: IfNotPresent
+        image: registry.cn-shenzhen.aliyuncs.com/infra/canal:1.1.3
+        ports:
+        - containerPort: 11111
+          name: canal-port
+        - containerPort: 11112
+          name: canal-metrics
+        resources:
+          requests:
+            memory: "1024Mi"
+            cpu: "100m"
+          limits:
+            memory: "1024Mi"
+            cpu: "800m"
+        readinessProbe:
+          httpGet: 
+            path: /metrics
+            port: 11112
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 30
+          successThreshold: 1
+          failureThreshold: 5
+        livenessProbe:
+          httpGet: 
+            path: /metrics
+            port: 11112
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 60
+          successThreshold: 1
+          failureThreshold: 5
+        volumeMounts:
+        - name: canal-conf
+          mountPath: /usr/local/canal/conf/canal.properties
+          subPath: canal.properties
+        - name: example-instance
+          mountPath: /usr/local/canal/conf/example
+        - name: canal-logs
+          mountPath: /usr/local/canal/logs
+        env:
+        - name: aliyun_logs_canalstd
+          value: "stdout"
+        - name: aliyun_logs_canallogs
+          value: "/usr/local/canal/logs/*/*.log"
+        - name: canal.zkServers
+          value: zk-cs:2181
+        - name: canal.auto.scan
+          value: "false"
+      volumes:
+      - name: example-instance
+        configMap:
+          name: example-instance-config
+      - name: canal-conf
+        configMap:
+          name: canal-config
+          items:
+          - key: canal.properties
+            path: canal.properties
+      - name: canal-logs
+        emptyDir: {}

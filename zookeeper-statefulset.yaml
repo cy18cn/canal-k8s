@@ -1,0 +1,157 @@
+kind: StorageClass
+apiVersion: storage.k8s.io/v1beta1
+metadata:
+  name: disk-efficiency-sz
+  namespace: infra
+provisioner: alicloud/disk
+parameters:
+  type: cloud_efficiency
+  regionid: cn-shenzhen
+  zoneid: cn-shenzhen-a,cn-shenzhen-b,cn-shenzhen-d
+reclaimPolicy: Retain
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zk-hs
+  namespace: infra
+  labels:
+    app: zk
+spec:
+  ports:
+  - port: 2888
+    name: server
+  - port: 3888
+    name: leader-election
+  clusterIP: None
+  selector:
+    app: zk
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zk-cs
+  namespace: infra
+  labels:
+    app: zk
+spec:
+  ports:
+  - port: 2181
+    name: client
+  selector:
+    app: zk
+
+---
+apiVersion: policy/v1beta1
+kind: PodDisruptionBudget
+metadata:
+  name: zk-pdb
+  namespace: infra
+spec:
+  selector:
+    matchLabels:
+      app: zk
+  maxUnavailable: 1
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zk
+  namespace: infra
+spec:
+  selector:
+    matchLabels:
+      app: zk
+  serviceName: "zk-hs"
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: zk
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: "app"
+                operator: In
+                values:
+                - zk
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: kubernetes-zookeeper
+        imagePullPolicy: IfNotPresent
+        image: mirrorgooglecontainers/kubernetes-zookeeper:1.0-3.4.10
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "10m"
+          limits:
+            memory: "2Gi"
+            cpu: "800m"
+        ports:
+        - containerPort: 2181
+          name: client
+        - containerPort: 2888
+          name: peer
+        - containerPort: 3888
+          name: leader-election
+        command:
+        - sh
+        - -c
+        - "start-zookeeper \
+          --servers=1 \
+          --data_dir=/var/lib/zookeeper/data \
+          --data_log_dir=/var/lib/zookeeper/log \
+          --conf_dir=/opt/zookeeper/conf \
+          --client_port=2181 \
+          --election_port=3888 \
+          --server_port=2888 \
+          --tick_time=2000 \
+          --init_limit=10 \
+          --sync_limit=5 \
+          --heap=512M \
+          --max_client_cnxns=60 \
+          --snap_retain_count=3 \
+          --purge_interval=12 \
+          --max_session_timeout=40000 \
+          --min_session_timeout=4000 \
+          --log_level=INFO"
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "zookeeper-ready 2181"
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - "zookeeper-ready 2181"
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: zkdata
+          mountPath: /var/lib/zookeeper
+      volumes:
+      - name: zkdata
+        emptyDir: {}
+  volumeClaimTemplates:
+  - metadata:
+      name: zkdata
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "disk-efficiency-sz"
+      resources:
+        requests:
+          storage: 10Gi
